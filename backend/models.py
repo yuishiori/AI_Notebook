@@ -68,12 +68,14 @@ class Conversation(Base):
     __tablename__ = "conversations"
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     workspace_id = Column(String, ForeignKey("workspaces.id"))
+    project_id = Column(String, ForeignKey("projects.id"), nullable=True)
     title = Column(String)
     pinned = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     workspace = relationship("Workspace", back_populates="conversations")
+    project = relationship("Project")
     messages = relationship("Message", back_populates="conversation")
 
 class Message(Base):

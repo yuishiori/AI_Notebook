@@ -173,13 +173,13 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
-            "name": "infer_kpi",
-            "description": "Infer KPIs based on recent logs for a project.",
+            "name": "scan_git_commits",
+            "description": "Scan the local git repository for recent commits to generate work logs.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "string", "description": "The ID of the project."},
-                    "recent_logs_count": {"type": "integer", "default": 10, "description": "Number of recent logs to consider."}
+                    "days": {"type": "integer", "default": 1, "description": "Number of days to look back."},
+                    "project_id": {"type": "string", "description": "The ID of the project to associate the logs with."}
                 },
                 "required": ["project_id"]
             }

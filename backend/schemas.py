@@ -84,6 +84,7 @@ class Message(MessageBase):
 # --- Conversation ---
 class ConversationBase(BaseModel):
     workspace_id: str
+    project_id: Optional[str] = None
     title: Optional[str] = None
     pinned: bool = False
 
@@ -97,6 +98,7 @@ class Conversation(ConversationBase):
     created_at: datetime
     updated_at: datetime
     messages: List[Message] = []
+
 
 # --- Knowledge Source ---
 class KnowledgeSourceBase(BaseModel):

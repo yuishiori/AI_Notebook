@@ -351,8 +351,39 @@ function App() {
                     <h2 className="text-3xl font-bold">{projects.find(p => p.id === selectedProjectId)?.name}</h2>
                     <p className="text-muted-foreground">專案詳情與工作日誌</p>
                   </div>
-                  <div className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-medium uppercase">
-                    {projects.find(p => p.id === selectedProjectId)?.status}
+                  <div className="flex items-center gap-3">
+                    <button 
+                      onClick={() => {
+                        console.log('Starting project chat for:', selectedProjectId);
+                        if (currentWorkspace && selectedProjectId) {
+                          const projectName = projects.find(p => p.id === selectedProjectId)?.name;
+                          const payload = { 
+                            workspace_id: currentWorkspace.id, 
+                            project_id: selectedProjectId,
+                            title: `${projectName} 專屬對話` 
+                          };
+                          console.log('Sending conversation payload:', payload);
+                          axios.post(`${API_BASE}/conversations/`, payload)
+                            .then(c => {
+                               console.log('Conversation created:', c.data);
+                               setConversations(prev => [c.data, ...prev])
+                               setCurrentConversationId(c.data.id)
+                               setActiveView('chat')
+                            })
+                            .catch(err => {
+                               console.error('Failed to create project conversation:', err);
+                               alert(`Error: ${err.response?.data?.detail || err.message}`);
+                            });
+                        }
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
+                    >
+                      <MessageCircle className="w-4 h-4" />
+                      開啟專屬對話
+                    </button>
+                    <div className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-medium uppercase">
+                      {projects.find(p => p.id === selectedProjectId)?.status}
+                    </div>
                   </div>
                 </div>
 

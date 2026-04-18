@@ -1,6 +1,28 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, EmailStr
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any, Literal
+
+# --- Auth ---
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    user_id: Optional[str] = None
+
+# --- User ---
+class UserBase(BaseModel):
+    email: EmailStr
+    name: Optional[str] = None
+    picture_url: Optional[str] = None
+
+class UserCreate(UserBase):
+    pass
+
+class User(UserBase):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    created_at: datetime
 
 # --- Workspace ---
 class WorkspaceBase(BaseModel):

@@ -6,12 +6,24 @@ from datetime import datetime
 class Base(DeclarativeBase):
     pass
 
+class User(Base):
+    __tablename__ = "users"
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    email = Column(String, unique=True, index=True, nullable=False)
+    name = Column(String)
+    picture_url = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    workspaces = relationship("Workspace", back_populates="owner")
+
 class Workspace(Base):
     __tablename__ = "workspaces"
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    owner_id = Column(String, ForeignKey("users.id"))
     name = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    owner = relationship("User", back_populates="workspaces")
     projects = relationship("Project", back_populates="workspace")
     work_logs = relationship("WorkLog", back_populates="workspace")
     conversations = relationship("Conversation", back_populates="workspace")

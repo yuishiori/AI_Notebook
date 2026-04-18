@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from .. import models, schemas
 from ..database import get_db
+from ..dependencies import get_current_user
 from datetime import date
 
 router = APIRouter(prefix="/api/work-logs", tags=["work-logs"])
@@ -12,9 +13,11 @@ def read_work_logs(
     project_id: Optional[str] = None,
     workspace_id: Optional[str] = None,
     iso_week: Optional[str] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
-    query = db.query(models.WorkLog)
+    query = db.query(models.WorkLog).join(models.Workspace)
+    query = query.filter(models.Workspace.owner_id == current_user.id)
     if project_id:
         query = query.filter(models.WorkLog.project_id == project_id)
     if workspace_id:
@@ -24,7 +27,12 @@ def read_work_logs(
     return query.all()
 
 @router.post("/", response_model=schemas.WorkLog)
-def create_work_log(work_log: schemas.WorkLogCreate, db: Session = Depends(get_db)):
+def create_work_log(work_log: schemas.WorkLogCreate, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    # Verify workspace ownership
+    ws = db.query(models.Workspace).filter(models.Workspace.id == work_log.workspace_id, models.Workspace.owner_id == current_user.id).first()
+    if not ws:
+        raise HTTPException(status_code=403, detail="Not authorized")
+        
     db_work_log = models.WorkLog(**work_log.model_dump())
     db.add(db_work_log)
 

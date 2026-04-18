@@ -7,6 +7,7 @@ from ..database import get_db
 from ..ai.gemini_client import get_gemini_client, TOOL_DEFINITIONS
 from ..ai.vector_db import get_vector_db
 from ..config import settings
+from ..dependencies import get_current_user
 import json
 import logging
 
@@ -15,14 +16,21 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 @router.post("/", response_model=schemas.Message)
-async def chat(chat_req: schemas.ChatRequest, db: Session = Depends(get_db)):
-    # 1. Get conversation history and bound project
+async def chat(chat_req: schemas.ChatRequest, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    # 1. Verify workspace ownership
+    ws = db.query(models.Workspace).filter(models.Workspace.id == chat_req.workspace_id, models.Workspace.owner_id == current_user.id).first()
+    if not ws:
+        raise HTTPException(status_code=403, detail="Not authorized to access this workspace")
+
+    # 2. Get conversation history and bound project
     db_conversation = db.query(models.Conversation).filter(models.Conversation.id == chat_req.conversation_id).first()
-    bound_project_id = db_conversation.project_id if db_conversation else None
-    
+    if not db_conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+        
+    bound_project_id = db_conversation.project_id
     db_messages = db.query(models.Message).filter(models.Message.conversation_id == chat_req.conversation_id).order_by(models.Message.created_at.asc()).all()
     
-    # 2. Add new user message
+    # 3. Add new user message
     user_msg = models.Message(
         conversation_id=chat_req.conversation_id,
         role="user",
@@ -32,9 +40,8 @@ async def chat(chat_req: schemas.ChatRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user_msg)
 
-    # 3. RAG: Search knowledge base (Apply filter if project is bound)
+    # 4. RAG: Search knowledge base
     vector_db = get_vector_db()
-    # If bound to a project, we can weight search or filter (ChromaDB supports 'where')
     search_where = {"project_id": bound_project_id} if bound_project_id else None
     search_results = vector_db.query(chat_req.workspace_id, chat_req.message, n_results=settings.rag_top_k, where=search_where)
     
@@ -48,7 +55,7 @@ async def chat(chat_req: schemas.ChatRequest, db: Session = Depends(get_db)):
     if bound_project_id:
         project = db.query(models.Project).filter(models.Project.id == bound_project_id).first()
         if project:
-            project_hint = f"This conversation is specifically about project '{project.name}' (ID: {project.id}). Please prioritize this project for all actions."
+            project_hint = f"This conversation is specifically about project '{project.name}' (ID: {project.id}). Please prioritize this project."
 
     system_prompt = f"""You are a personal AI assistant. Use the following context to help answer the user's request.
 Context:
@@ -60,7 +67,7 @@ If the user asks to perform an action (like creating a log or listing projects),
 Today's date is {date.today().isoformat()}.
 """
 
-    # 4. Prepare contents for Gemini
+    # 5. Prepare contents for Gemini
     contents = []
     for m in db_messages:
         parts = []
@@ -69,7 +76,6 @@ Today's date is {date.today().isoformat()}.
         if m.tool_calls:
             for tc in m.tool_calls:
                 parts.append({"functionCall": tc})
-        
         contents.append({"role": "user" if m.role == "user" else "model", "parts": parts})
     
     # Add current message
@@ -83,7 +89,6 @@ Today's date is {date.today().isoformat()}.
     
     while current_iteration < max_iterations:
         current_iteration += 1
-        print(f"DEBUG: Gemini iteration {current_iteration}")
         try:
             response = await client.generate_content(
                 contents=contents,
@@ -107,35 +112,35 @@ Today's date is {date.today().isoformat()}.
                 if "functionCall" in part:
                     tool_calls.append(part["functionCall"])
 
-            # 如果有文字且沒有工具呼叫，或者雖然有工具呼叫但我們想先回傳部分文字
             if not tool_calls and assistant_text:
-                print(f"DEBUG: Final response reached at iteration {current_iteration}")
                 db_assistant_msg = models.Message(
                     conversation_id=chat_req.conversation_id,
                     role="assistant",
                     content=assistant_text
                 )
                 db.add(db_assistant_msg)
-                # ... 略 (更新時間)
+                
+                conversation = db.query(models.Conversation).filter(models.Conversation.id == chat_req.conversation_id).first()
+                if conversation:
+                    conversation.updated_at = db_assistant_msg.created_at
+                    if not conversation.title:
+                        conversation.title = chat_req.message[:50]
+                
                 db.commit()
                 db.refresh(db_assistant_msg)
                 return db_assistant_msg
             
             if not tool_calls and not assistant_text:
-                # 有時候 AI 會回傳空的，代表它可能卡住了
-                print("DEBUG: Gemini returned empty content, retrying...")
                 continue
 
             # Execute tool calls
-            print(f"DEBUG: Executing tools: {[tc['name'] for tc in tool_calls]}")
             function_responses = []
             for tc in tool_calls:
                 name = tc["name"]
                 args = tc["args"]
                 
                 result = await execute_tool(name, args, db, chat_req.workspace_id)
-                print(f"DEBUG: Tool {name} result: {str(result)[:100]}...")
-
+                
                 function_responses.append({
                     "role": "function",
                     "parts": [{
@@ -146,10 +151,11 @@ Today's date is {date.today().isoformat()}.
                     }]
                 })
             
+            # Add tool responses to contents
             contents.extend(function_responses)
             
         except Exception as e:
-            print(f"DEBUG: Error in chat loop: {str(e)}")
+            logger.error(f"Chat error: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
 
     raise HTTPException(status_code=500, detail="Too many tool use iterations")

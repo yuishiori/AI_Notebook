@@ -1,16 +1,16 @@
 import React, { useEffect, useState } from 'react'
 import { useAppStore } from './store'
 import axios from 'axios'
-import { MessageCircle, Briefcase, Settings, Plus, Send, MoreVertical, Paperclip } from 'lucide-react'
+import { MessageCircle, Briefcase, Settings, Plus, Send, MoreVertical, Paperclip, LogOut } from 'lucide-react'
 import { clsx, type ClassValue } from 'clsx'
 import { twMerge } from 'tailwind-merge'
+import { GoogleLogin, googleLogout } from '@react-oauth/google'
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8765/api'
-console.log('Final API_BASE being used:', API_BASE);
 
 interface Message {
   id: string;
@@ -19,7 +19,7 @@ interface Message {
 }
 
 function App() {
-  const { currentWorkspace, setCurrentWorkspace, workspaces, setWorkspaces, projects, setProjects } = useAppStore()
+  const { user, token, setAuth, logout, currentWorkspace, setCurrentWorkspace, workspaces, setWorkspaces, projects, setProjects } = useAppStore()
   const [activeView, setActiveView] = useState<'chat' | 'settings' | 'project'>('chat')
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [conversations, setConversations] = useState<any[]>([])
@@ -32,14 +32,49 @@ function App() {
   const [projectLogs, setProjectLogs] = useState<any[]>([])
   const scrollRef = React.useRef<HTMLDivElement>(null)
 
+  // Axios Interceptor for Auth
+  useEffect(() => {
+    const interceptor = axios.interceptors.request.use((config) => {
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+      return config;
+    });
+    return () => axios.interceptors.request.eject(interceptor);
+  }, [token]);
+
+  const handleLoginSuccess = async (credentialResponse: any) => {
+    console.log('Google Login Success, received credential');
+    try {
+      const res = await axios.post(`${API_BASE}/auth/google`, {
+        id_token: credentialResponse.credential
+      });
+      console.log('Backend Auth Success:', res.data);
+      const { access_token } = res.data;
+      
+      // Get user info
+      const userRes = await axios.get(`${API_BASE}/auth/me`, {
+        headers: { Authorization: `Bearer ${access_token}` }
+      });
+      console.log('User Profile Fetched:', userRes.data);
+      
+      setAuth(userRes.data, access_token);
+    } catch (error: any) {
+      console.error('Backend Login failed:', error.response?.data || error.message);
+      alert(`Login failed: ${error.response?.data?.detail || error.message}`);
+    }
+  };
+
   // 取得專案日誌
   useEffect(() => {
-    if (selectedProjectId && activeView === 'project') {
+    if (token && selectedProjectId && activeView === 'project') {
       axios.get(`${API_BASE}/work-logs/?project_id=${selectedProjectId}`).then(res => {
         setProjectLogs(res.data)
-      })
+      }).catch(err => {
+        if (err.response?.status === 401) logout();
+      });
     }
-  }, [selectedProjectId, activeView])
+  }, [selectedProjectId, activeView, token]);
 
   // 捲動到底部
   useEffect(() => {
@@ -49,8 +84,8 @@ function App() {
   }, [messages, loading]);
 
   useEffect(() => {
+    if (!token) return;
     // Initial data fetch
-    console.log('Fetching workspaces from:', `${API_BASE}/workspaces/`);
     axios.get(`${API_BASE}/workspaces/`)
       .then(res => {
         setWorkspaces(res.data)
@@ -58,11 +93,14 @@ function App() {
           setCurrentWorkspace(res.data[0])
         }
       })
-      .catch(err => console.error('Failed to fetch workspaces:', err));
-  }, [])
+      .catch(err => {
+        console.error('Failed to fetch workspaces:', err);
+        if (err.response?.status === 401) logout();
+      });
+  }, [token])
 
   useEffect(() => {
-    if (currentWorkspace && !isCreatingInitial) {
+    if (token && currentWorkspace && !isCreatingInitial) {
       axios.get(`${API_BASE}/projects/?workspace_id=${currentWorkspace.id}`).then(res => {
         setProjects(res.data)
       })
@@ -72,7 +110,6 @@ function App() {
         if (res.data.length > 0) {
           setCurrentConversationId(res.data[0].id)
         } else if (!isCreatingInitial) {
-          // 防止重複建立
           setIsCreatingInitial(true)
           axios.post(`${API_BASE}/conversations/`, { 
             workspace_id: currentWorkspace.id, 
@@ -86,27 +123,20 @@ function App() {
         }
       })
     }
-  }, [currentWorkspace])
+  }, [currentWorkspace, token])
 
   useEffect(() => {
-    if (currentConversationId) {
+    if (token && currentConversationId) {
       axios.get(`${API_BASE}/conversations/${currentConversationId}/messages/`).then(res => {
         setMessages(res.data)
       })
     }
-  }, [currentConversationId])
+  }, [currentConversationId, token])
 
   const handleSend = async () => {
-    if (loading) return;
-    console.log('handleSend triggered');
-    if (!input.trim()) {
-      console.log('Input is empty');
-      return;
-    }
-    if (!currentConversationId || !currentWorkspace) {
-      console.log('Missing conversation or workspace', { currentConversationId, currentWorkspace });
-      return;
-    }
+    if (loading || !token) return;
+    if (!input.trim()) return;
+    if (!currentConversationId || !currentWorkspace) return;
 
     const currentInput = input;
     const userMsg = { id: Date.now().toString(), role: 'user', content: currentInput }
@@ -114,26 +144,47 @@ function App() {
     setInput('')
     setLoading(true)
 
-    console.log('Sending request to:', `${API_BASE}/chat/`);
     try {
       const res = await axios.post(`${API_BASE}/chat/`, {
         conversation_id: currentConversationId,
         message: currentInput,
         workspace_id: currentWorkspace.id
       })
-      console.log('Response status:', res.status);
-      console.log('Response full data:', res.data);
       if (res.data) {
         setMessages(prev => [...prev, res.data])
       }
     } catch (error: any) {
       console.error('API Error:', error.response?.data || error.message);
-      // 如果失敗，把訊息還給輸入框
       setInput(currentInput);
-      alert(`Error: ${error.response?.data?.detail || error.message}`);
+      if (error.response?.status === 401) logout();
+      else alert(`Error: ${error.response?.data?.detail || error.message}`);
     } finally {
       setLoading(false)
     }
+  }
+
+  if (!token) {
+    return (
+      <div className="h-screen w-screen flex flex-col items-center justify-center bg-muted/20">
+        <div className="p-8 bg-card border rounded-2xl shadow-xl max-w-md w-full text-center">
+          <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg shadow-blue-200">
+             <MessageCircle className="text-white w-8 h-8" />
+          </div>
+          <h1 className="text-2xl font-bold mb-2">個人 AI 工作助理</h1>
+          <p className="text-muted-foreground mb-8">請先登入以開始管理您的工作與生活</p>
+          <div className="flex justify-center">
+            <GoogleLogin 
+              onSuccess={handleLoginSuccess}
+              onError={() => alert('Login Failed')}
+              useOneTap
+            />
+          </div>
+          <p className="mt-8 text-xs text-muted-foreground">
+            登入即代表您同意服務條款與隱私權政策
+          </p>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -142,24 +193,29 @@ function App() {
       <div className="w-64 border-r bg-muted/30 flex flex-col">
         <div className="p-4 border-b flex items-center justify-between">
           <select 
-            className="bg-transparent font-bold focus:outline-none"
+            className="bg-transparent font-bold focus:outline-none max-w-[120px] truncate"
             value={currentWorkspace?.id}
             onChange={(e) => {
               const ws = workspaces.find(w => w.id === e.target.value)
-              if (ws) setCurrentWorkspace(ws)
+              if (ws) {
+                setCurrentWorkspace(ws);
+                setActiveView('chat');
+              }
             }}
           >
             {workspaces.map(ws => (
               <option key={ws.id} value={ws.id}>{ws.name}</option>
             ))}
           </select>
-          <Settings 
-            className={cn(
-              "w-4 h-4 cursor-pointer transition-colors",
-              activeView === 'settings' ? "text-blue-600" : "text-muted-foreground hover:text-foreground"
-            )}
-            onClick={() => setActiveView('settings')}
-          />
+          <div className="flex items-center gap-2">
+            <Settings 
+              className={cn(
+                "w-4 h-4 cursor-pointer transition-colors",
+                activeView === 'settings' ? "text-blue-600" : "text-muted-foreground hover:text-foreground"
+              )}
+              onClick={() => setActiveView('settings')}
+            />
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-2">
@@ -215,7 +271,6 @@ function App() {
                 <div 
                   key={p.id} 
                   onClick={() => {
-                    console.log('Project clicked:', p.name, p.id);
                     setSelectedProjectId(p.id)
                     setActiveView('project')
                   }}
@@ -234,6 +289,15 @@ function App() {
               </div>
             )}
           </div>
+        </div>
+        
+        {/* User Profile Area */}
+        <div className="p-4 border-t flex items-center gap-3">
+           <img src={user?.picture_url || ''} alt="" className="w-8 h-8 rounded-full border bg-muted" />
+           <div className="flex-1 overflow-hidden">
+              <p className="text-sm font-medium truncate">{user?.name}</p>
+              <p className="text-xs text-muted-foreground truncate">{user?.email}</p>
+           </div>
         </div>
       </div>
 
@@ -269,22 +333,29 @@ function App() {
             <div className="p-4 border-t relative z-50">
               <div className="flex items-center gap-2 max-w-4xl mx-auto bg-muted rounded-xl p-2 focus-within:ring-1 ring-ring relative">
                 <Paperclip className="w-5 h-5 text-muted-foreground cursor-pointer ml-2" />
-                <input 
-                  type="text" 
+                <textarea 
                   placeholder="Ask anything..." 
-                  className="flex-1 bg-transparent border-none focus:outline-none p-2 text-foreground"
+                  className="flex-1 bg-transparent border-none focus:outline-none p-2 text-foreground resize-none max-h-40 overflow-y-auto"
+                  rows={1}
                   value={input}
-                  onChange={e => setInput(e.target.value)}
+                  onChange={e => {
+                    setInput(e.target.value);
+                    // Auto resize
+                    e.target.style.height = 'auto';
+                    e.target.style.height = e.target.scrollHeight + 'px';
+                  }}
                   onCompositionStart={() => setIsComposing(true)}
                   onCompositionEnd={() => setIsComposing(false)}
                   onKeyDown={e => {
-                    if (e.key === 'Enter' && !isComposing) {
+                    if (e.key === 'Enter' && !e.shiftKey && !isComposing) {
                       e.preventDefault();
                       handleSend();
+                      e.currentTarget.style.height = 'auto'; // Reset height
                     }
                   }}
                   disabled={loading}
                 />
+
                 <button 
                   onClick={(e) => {
                     e.preventDefault();
@@ -307,6 +378,29 @@ function App() {
             <h2 className="text-2xl font-bold mb-6">系統設定</h2>
             <div className="max-w-2xl space-y-6">
               <div className="p-4 border rounded-lg bg-muted/20">
+                <h3 className="font-semibold mb-4">帳戶管理</h3>
+                <div className="flex items-center justify-between">
+                   <div className="flex items-center gap-3">
+                      <img src={user?.picture_url || ''} className="w-10 h-10 rounded-full" alt="" />
+                      <div>
+                         <p className="font-medium">{user?.name}</p>
+                         <p className="text-sm text-muted-foreground">{user?.email}</p>
+                      </div>
+                   </div>
+                   <button 
+                     onClick={() => {
+                        googleLogout();
+                        logout();
+                     }}
+                     className="flex items-center gap-2 px-3 py-1.5 text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors text-sm"
+                   >
+                     <LogOut className="w-4 h-4" />
+                     登出
+                   </button>
+                </div>
+              </div>
+
+              <div className="p-4 border rounded-lg bg-muted/20">
                 <h3 className="font-semibold mb-2">模型資訊</h3>
                 <div className="space-y-2 text-sm">
                   <div className="flex justify-between">
@@ -321,23 +415,9 @@ function App() {
               </div>
 
               <div className="p-4 border rounded-lg bg-muted/20">
-                <h3 className="font-semibold mb-2">API 狀態</h3>
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between items-center">
-                    <span className="text-muted-foreground">Backend API:</span>
-                    <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded text-xs">Connected</span>
-                  </div>
-                  <div className="flex justify-between items-center">
-                    <span className="text-muted-foreground">Gemini API Key:</span>
-                    <span>{import.meta.env.VITE_API_BASE_URL ? 'Cloud Configured' : 'Local .env'}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="p-4 border rounded-lg bg-muted/20">
                 <h3 className="font-semibold mb-2">關於系統</h3>
                 <p className="text-sm text-muted-foreground">
-                  個人 AI 工作助理 v1.0.0 (Local-First Architecture)
+                  個人 AI 工作助理 v1.1.0 (Multi-User Cloud Sync)
                 </p>
               </div>
             </div>
@@ -354,26 +434,17 @@ function App() {
                   <div className="flex items-center gap-3">
                     <button 
                       onClick={() => {
-                        console.log('Starting project chat for:', selectedProjectId);
                         if (currentWorkspace && selectedProjectId) {
                           const projectName = projects.find(p => p.id === selectedProjectId)?.name;
-                          const payload = { 
+                          axios.post(`${API_BASE}/conversations/`, { 
                             workspace_id: currentWorkspace.id, 
                             project_id: selectedProjectId,
                             title: `${projectName} 專屬對話` 
-                          };
-                          console.log('Sending conversation payload:', payload);
-                          axios.post(`${API_BASE}/conversations/`, payload)
-                            .then(c => {
-                               console.log('Conversation created:', c.data);
-                               setConversations(prev => [c.data, ...prev])
-                               setCurrentConversationId(c.data.id)
-                               setActiveView('chat')
-                            })
-                            .catch(err => {
-                               console.error('Failed to create project conversation:', err);
-                               alert(`Error: ${err.response?.data?.detail || err.message}`);
-                            });
+                          }).then(c => {
+                             setConversations(prev => [c.data, ...conversations])
+                             setCurrentConversationId(c.data.id)
+                             setActiveView('chat')
+                          })
                         }
                       }}
                       className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"

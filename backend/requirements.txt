@@ -14,3 +14,8 @@ sentence-transformers
 pydantic
 aiohttp
 python-multipart
+google-auth
+pyjwt
+python-jose[cryptography]
+passlib[bcrypt]
+email-validator==2.3.0
